@@ -41,6 +41,7 @@ public class SnappySecurityTest extends SnappyTest {
   public static Boolean isAuthorized = false;
   public static String adminUser = "user1";
   public static String unAuthUser = "user5";
+  private static HashMap<Map<String,ResultSet>,String> policySelectQueryMap = new HashMap<Map<String,ResultSet>,String>();
 
 
   public static void HydraTask_runQuery() throws SQLException {
@@ -136,6 +137,76 @@ public class SnappySecurityTest extends SnappyTest {
     Boolean isRevoke = SnappySecurityPrms.getIsRevoke();
     Boolean isPublic = SnappySecurityPrms.getIsPublic();
     grantRevokeOps(isGrant, isRevoke, isPublic);
+  }
+
+  public static void createPolicy(){
+    Vector userVector = SnappySecurityPrms.getUserName();
+    Vector onSchema = SnappySecurityPrms.getSchema();
+    Vector dmlOps = SnappySecurityPrms.getDmlOps();
+    int policyCnt = SnappySecurityPrms.getPolicyCnt();
+    Connection conn = null;
+    try{
+      //create policy p2 on salary1 for select to user1 using name='a1';
+      for (int i = 0; i < userVector.size(); i++) {
+        String policyUser = userVector.elementAt(i).toString(); //entry.getKey();
+        for (int s = 0; s < onSchema.size(); s++) {
+          String schemaOwnerTab = (String)onSchema.elementAt(s);
+          String[] schemaOwner = schemaOwnerTab.split("\\.");
+          Log.getLogWriter().info("The schemaOwner is " + schemaOwner[0]);
+          for(int p = 0 ;p < policyCnt ;p++) {
+            String policyStr = "CREATE POLICY p" +p+ " ON " + schemaOwnerTab + " FOR " +dmlOps.elementAt(0) + " TO " +policyUser+ " USING " ;//filter condition;
+            //Equivalent select query will be :
+            String selectQry = "SELECT * FROM "+schemaOwnerTab+" WHERE ";//filter condition
+            Map<String,ResultSet> queryResultMap = new HashMap<>();
+            Log.getLogWriter().info("Policy created for "+policyUser+ " on table " +onSchema.elementAt(s)+" is " + policyStr);
+            try {
+              conn = getSecuredLocatorConnection(schemaOwner[0], schemaOwner[0]+"123");
+              conn.createStatement().execute(policyStr);
+              ResultSet rs = conn.createStatement().executeQuery(selectQry);
+              //Hash map consisting of <policyQry,equivalentSelectQry>,user
+              queryResultMap.put(selectQry,rs);
+              policySelectQueryMap.put(queryResultMap,policyUser);
+
+            } catch (SQLException e) {
+              throw new TestException("Caught Exception in executing the policy sql" + e.getMessage());
+            }
+          }
+        }
+      }
+    }
+    catch(Exception ex){
+      throw new TestException("Caught Exception in createPolicy() " + ex.getMessage());
+    }
+  }
+
+  public static void validateQuery(){
+    Connection conn = null;
+    HashMap<Map<String,ResultSet>,String> queryUserMap = policySelectQueryMap;
+    try{
+      for (Map.Entry<Map<String,ResultSet>,String> entry : queryUserMap.entrySet()) {
+        Map<String, ResultSet> queryMap = entry.getKey();
+        String policyUser = entry.getValue();
+        Log.getLogWriter().info("The user is " + policyUser);
+        for(Map.Entry<String, ResultSet> itrr : queryMap.entrySet()){
+          String selectQry = itrr.getKey();
+          ResultSet prevRS = itrr.getValue();
+          Log.getLogWriter().info("The select Query is " + selectQry);
+          conn = getSecuredLocatorConnection(policyUser,policyUser+"123");
+          ResultSet rs = conn.createStatement().executeQuery(selectQry);
+
+          //Compare the prevRS and rs ,it should be same.
+          
+        }
+      }
+    }
+    catch(Exception ex){
+      throw new TestException("Caught Exception in validateQuery " + ex.getMessage());
+    }
+  }
+
+
+  public static void HydraTask_createPolicy() {
+   createPolicy();
   }
 
   public static ArrayList getQueryArr(String fileName, String user) {
