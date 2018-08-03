@@ -202,6 +202,7 @@ public class SnappySecurityTest extends SnappyTest {
     Connection conn ;
     try{
       //create policy p2 on salary1 for select to user1 using name='a1';
+      int cnt = 1;
       for (int i = 0; i < userVector.size(); i++) {
         String policyUser = userVector.elementAt(i).toString(); //entry.getKey();
         for(int p = 0 ;p < policyCnt ;p++) {
@@ -218,12 +219,16 @@ public class SnappySecurityTest extends SnappyTest {
               filterCond = "CATEGORYID = 4";
 
             String policyName = "p"+p;
-            while(policyUserMap.containsKey(policyName))
-              policyName = "p"+(p+1);
+            while(policyUserMap.containsKey(policyName)) {
+              Log.getLogWriter().info("checking for policy name " + policyName);
+              policyName = "p" + cnt;
+              Log.getLogWriter().info("The next policy name is  "+ policyName);
+              cnt++;
+            }
 
             String policyStr = "CREATE POLICY " +policyName+ " ON " + schemaOwnerTab + " FOR " +dmlOps.elementAt(0) + " TO " +policyUser+ " USING "+filterCond ;
             //Equivalent select query will be :
-            String selectQry = "SELECT * FROM "+schemaOwner[1]+" WHERE "+filterCond;
+            String selectQry = "SELECT * FROM "+ schemaOwnerTab +" WHERE "+filterCond;
             Map<String,ResultSet> queryResultMap = new HashMap<>();
             Log.getLogWriter().info("Policy created for "+policyUser+ " on table " +onSchema.elementAt(s)+" is " + policyStr);
             try {
@@ -251,6 +256,8 @@ public class SnappySecurityTest extends SnappyTest {
     Log.getLogWriter().info("Inside validateQuery() ");
     Connection conn = null;
     HashMap<Map<String,ResultSet>,String> queryUserMap = policySelectQueryMap;
+    ResultSetMetaData currRSMD;
+    ResultSetMetaData prevRSMD;
     try{
       for (Map.Entry<Map<String,ResultSet>,String> entry : queryUserMap.entrySet()) {
         Map<String, ResultSet> queryMap = entry.getKey();
@@ -258,15 +265,17 @@ public class SnappySecurityTest extends SnappyTest {
         Log.getLogWriter().info("The user is " + policyUser);
         for(Map.Entry<String, ResultSet> itrr : queryMap.entrySet()){
           String selectQry = itrr.getKey();
+          String[] finalSelectQ = selectQry.split("WHERE");
           ResultSet prevRS = itrr.getValue();
           Log.getLogWriter().info("The select Query is " + selectQry);
+          Log.getLogWriter().info("The Final select Query tobe executed by policy User is  " + finalSelectQ[0]);
           conn = getSecuredLocatorConnection(policyUser,policyUser+"123");
-          ResultSet currRS = conn.createStatement().executeQuery(selectQry);
+          ResultSet currRS = conn.createStatement().executeQuery(finalSelectQ[0]);
 
           //Compare the prevRS and rs ,it should be same.
-          while(currRS.next()){
-            ResultSetMetaData currRSMD = currRS.getMetaData();
-            ResultSetMetaData prevRSMD = prevRS.getMetaData();
+          while(currRS.next() && prevRS.next()){
+            currRSMD = currRS.getMetaData();
+            prevRSMD = prevRS.getMetaData();
             int currRSColCnt = currRSMD.getColumnCount();
             int prevRSColCnt = prevRSMD.getColumnCount();
             Log.getLogWriter().info("The currRSColCnt count is " + currRSColCnt + " \n The prevRSColCnt col cnt is "+ prevRSColCnt);
