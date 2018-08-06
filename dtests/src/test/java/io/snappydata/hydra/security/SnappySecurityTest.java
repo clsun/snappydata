@@ -16,6 +16,7 @@
  */
 package io.snappydata.hydra.security;
 
+import com.mysql.jdbc.*;
 import hydra.Log;
 import hydra.RemoteTestModule;
 import io.snappydata.hydra.cluster.SnappyPrms;
@@ -30,6 +31,9 @@ import java.io.FileReader;
 import java.io.File;
 import java.io.IOException;
 import java.sql.*;
+import java.sql.Clob;
+import java.sql.Connection;
+import java.sql.ResultSetMetaData;
 import java.util.*;
 public class SnappySecurityTest extends SnappyTest {
 
@@ -38,7 +42,8 @@ public class SnappySecurityTest extends SnappyTest {
   public static Boolean isAuthorized = false;
   public static String adminUser = "user1";
   public static String unAuthUser = "user5";
-  private static HashMap<Map<String,ResultSet>,String> policySelectQueryMap = new HashMap<Map<String,ResultSet>,String>();
+  private static HashMap<Map<String,ResultSet>,String> policySelectQueryMap = new HashMap<>();
+  private static HashMap<Map<String,ResultSet>,String> policyFullSelectQueryMap = new HashMap<>();
   private static HashMap<String,String> policyUserMap = new HashMap<>();
 
 
@@ -175,15 +180,18 @@ public class SnappySecurityTest extends SnappyTest {
 
   public static void dropPolicy(){
     Log.getLogWriter().info("Inside dropPolicy() ");
-    int policyCnt = SnappySecurityPrms.getPolicyCnt();
-    Vector onSchema = SnappySecurityPrms.getSchema();
     Connection conn = null;
     try{
-      String schemaOwnerTab = (String)onSchema.elementAt(0);
-      String[] schemaOwner = schemaOwnerTab.split("\\.");
-      conn = getSecuredLocatorConnection(schemaOwner[0],schemaOwner[0]+"123");
-      for(int p = 0 ;p < policyCnt ;p++) {
-        conn.createStatement().execute("DROP POLICY p"+p);
+      HashMap<String,String> tempPolicyMap = policyUserMap;
+       for(Map.Entry<String,String> itrr : tempPolicyMap.entrySet() ){
+        String policyNm = itrr.getKey();
+        String schemaOwner = itrr.getValue();
+        try {
+          conn = getSecuredLocatorConnection(schemaOwner, schemaOwner + "123");
+        }
+        catch(Exception e){Log.getLogWriter().info("The exception is " + e.getMessage());}
+        Log.getLogWriter().info("Dropping policy p " + policyNm + " with schemaOwner " + schemaOwner);
+        conn.createStatement().execute("DROP POLICY " + policyNm);
       }
     }
     catch(Exception ex){
@@ -198,7 +206,7 @@ public class SnappySecurityTest extends SnappyTest {
     Vector onSchema = SnappySecurityPrms.getSchema();
     Vector dmlOps = SnappySecurityPrms.getDmlOps();
     int policyCnt = SnappySecurityPrms.getPolicyCnt();
-    String filterCond ;
+    String filterCond,orderBy ;
     Connection conn ;
     try{
       //create policy p2 on salary1 for select to user1 using name='a1';
@@ -213,10 +221,14 @@ public class SnappySecurityTest extends SnappyTest {
             Log.getLogWriter().info("The schemaOwner is " + schemaOwner[0]);
 
             //temp check
-            if(schemaOwner[1].equalsIgnoreCase("employees"))
+            if(schemaOwner[1].equalsIgnoreCase("employees")) {
               filterCond = "EMPLOYEEID = 1 AND COUNTRY = 'USA'";
-            else
+               orderBy = " ORDER BY EMPLOYEEID asc ";
+            }
+            else {
               filterCond = "CATEGORYID = 4";
+              orderBy = " ORDER BY CATEGORYID asc ";
+            }
 
             String policyName = "p"+p;
             while(policyUserMap.containsKey(policyName)) {
@@ -228,17 +240,22 @@ public class SnappySecurityTest extends SnappyTest {
 
             String policyStr = "CREATE POLICY " +policyName+ " ON " + schemaOwnerTab + " FOR " +dmlOps.elementAt(0) + " TO " +policyUser+ " USING "+filterCond ;
             //Equivalent select query will be :
-            String selectQry = "SELECT * FROM "+ schemaOwnerTab +" WHERE "+filterCond;
+            String selectQryWF = "SELECT * FROM "+ schemaOwnerTab +" WHERE "+filterCond;
+            String selectQry = "SELECT * FROM "+ schemaOwnerTab + orderBy;
             Map<String,ResultSet> queryResultMap = new HashMap<>();
+            Map<String,ResultSet> queryResultMap1 = new HashMap<>();
             Log.getLogWriter().info("Policy created for "+policyUser+ " on table " +onSchema.elementAt(s)+" is " + policyStr);
             try {
               conn = getSecuredLocatorConnection(schemaOwner[0], schemaOwner[0]+"123");
               conn.createStatement().execute(policyStr);
-              ResultSet rs = conn.createStatement().executeQuery(selectQry);
+              ResultSet rs = conn.createStatement(ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_READ_ONLY).executeQuery(selectQryWF);//select query with filter conditions
+              ResultSet rs1 = conn.createStatement(ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_READ_ONLY).executeQuery(selectQry);//select query with no filter conditions
               //Hash map consisting of <policyQry,equivalentSelectQry>,user
-              queryResultMap.put(selectQry,rs);
+              queryResultMap.put(selectQryWF,rs);
+              queryResultMap1.put(selectQry,rs1);
               policySelectQueryMap.put(queryResultMap,policyUser);
               policyUserMap.put(policyName,schemaOwner[0]);
+              policyFullSelectQueryMap.put(queryResultMap1,policyUser);
             } catch (SQLException e) {
               throw new TestException("Caught Exception in executing the policy sql" + e.getMessage());
             }
@@ -252,50 +269,62 @@ public class SnappySecurityTest extends SnappyTest {
     Log.getLogWriter().info("createPolicy() method finished successfully ");
   }
 
-  public static void validateQuery(){
+  public static void validateQuery() {
     Log.getLogWriter().info("Inside validateQuery() ");
     Connection conn = null;
-    HashMap<Map<String,ResultSet>,String> queryUserMap = policySelectQueryMap;
+    Boolean isDropPolicy = SnappySecurityPrms.getIsDropPolicy();
+    HashMap<Map<String, ResultSet>, String> queryUserMap ;
+    if(isDropPolicy) {
+      queryUserMap = policyFullSelectQueryMap; // this map contains rs fro select * from table query
+      Log.getLogWriter().info("Using policyFullSelectQueryMap");
+    }
+    else {
+      queryUserMap = policySelectQueryMap; // this map contains rs fro select * from table with condition query
+      Log.getLogWriter().info("Using policySelectQueryMap");
+    }
     ResultSetMetaData currRSMD;
     ResultSetMetaData prevRSMD;
-    try{
-      for (Map.Entry<Map<String,ResultSet>,String> entry : queryUserMap.entrySet()) {
+    ResultSet currRS;
+    try {
+      for (Map.Entry<Map<String, ResultSet>, String> entry : queryUserMap.entrySet()) {
         Map<String, ResultSet> queryMap = entry.getKey();
         String policyUser = entry.getValue();
         Log.getLogWriter().info("The user is " + policyUser);
-        for(Map.Entry<String, ResultSet> itrr : queryMap.entrySet()){
+        for (Map.Entry<String, ResultSet> itrr : queryMap.entrySet()) {
           String selectQry = itrr.getKey();
           String[] finalSelectQ = selectQry.split("WHERE");
           ResultSet prevRS = itrr.getValue();
           Log.getLogWriter().info("The select Query is " + selectQry);
           Log.getLogWriter().info("The Final select Query tobe executed by policy User is  " + finalSelectQ[0]);
-          conn = getSecuredLocatorConnection(policyUser,policyUser+"123");
-          ResultSet currRS = conn.createStatement().executeQuery(finalSelectQ[0]);
-
-          //Compare the prevRS and rs ,it should be same.
-          while(currRS.next() && prevRS.next()){
-            currRSMD = currRS.getMetaData();
-            prevRSMD = prevRS.getMetaData();
-            int currRSColCnt = currRSMD.getColumnCount();
-            int prevRSColCnt = prevRSMD.getColumnCount();
-            Log.getLogWriter().info("The currRSColCnt count is " + currRSColCnt + " \n The prevRSColCnt col cnt is "+ prevRSColCnt);
-            if(currRSColCnt == prevRSColCnt) {
-              for (int i = 1; i <= currRSColCnt; i++) {
-                Object currRowVal = currRS.getObject(i);
-                Object prevRowVal = prevRS.getObject(i);
-                Log.getLogWriter().info("Owner Row val = "+ currRowVal+ " \n Policy user row val = "+ prevRowVal);
-                //Compare the row vals it should be same.
+          conn = getSecuredLocatorConnection(policyUser, policyUser + "123");
+          try {
+            currRS = conn.createStatement().executeQuery(finalSelectQ[0]);
+            //Compare the prevRS and rs ,it should be same.
+            while (currRS.next()&& prevRS.next()) {
+              currRSMD = currRS.getMetaData();
+              prevRSMD = prevRS.getMetaData();
+              int currRSColCnt = currRSMD.getColumnCount();
+              int prevRSColCnt = prevRSMD.getColumnCount();
+              Log.getLogWriter().info("The currRSColCnt count is " + currRSColCnt + " \n The prevRSColCnt col cnt is " + prevRSColCnt);
+              if (currRSColCnt == prevRSColCnt) {
+                for (int i = 1; i <= currRSColCnt; i++) {
+                  Object currRowVal = currRS.getObject(i);
+                  Object prevRowVal = prevRS.getObject(i);
+                  // if(currRowVal.getClass().equals(""))
+                  Log.getLogWriter().info(" CLass of object is = " + currRowVal.getClass() + " \n Converted to string is " + currRowVal.toString() + " \n Policy user row val = " + prevRowVal.toString());
+                  //Compare the row vals it should be same.
+                }
+              } else {
+                Log.getLogWriter().info("ERROR : The col cnts donot match ");
               }
             }
-            else
-            {
-              Log.getLogWriter().info("ERROR : The col cnts donot match ");
+            prevRS.beforeFirst();
+          } catch (SQLException ex) {
+            Log.getLogWriter().info("Got sql exception " + ex.getMessage());
             }
-          }
         }
       }
-    }
-    catch(Exception ex){
+    } catch (Exception ex) {
       throw new TestException("Caught Exception in validateQuery " + ex.getMessage());
     }
     Log.getLogWriter().info("validateQuery() method finished successfully ");
@@ -526,7 +555,7 @@ public class SnappySecurityTest extends SnappyTest {
       throws
       SQLException {
     Log.getLogWriter().info("Creating secure connection using " + driver + " with " + protocol +
-        " and credentials = " + props.getProperty("user") + props.getProperty("password"));
+        " and credentials user = " + props.getProperty("user") + " password = "+  props.getProperty("password"));
     loadDriver(driver);
     Connection conn = DriverManager.getConnection(protocol, props);
     return conn;

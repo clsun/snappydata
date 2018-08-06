@@ -54,6 +54,8 @@ public class SnappySecurityPrms extends SnappyPrms{
 
   public static Long isRLS;
 
+  public static Long isDropPolicy;
+
   public static Long numOfPolicy;
 
   public static int getPolicyCnt() {
@@ -80,6 +82,11 @@ public class SnappySecurityPrms extends SnappyPrms{
 
   public static boolean getIsRLSenabled() {
     Long key = isRLSenabled;
+    return tasktab().booleanAt(key, tab().booleanAt(key, false));
+  }
+
+  public static boolean getIsDropPolicy() {
+    Long key = isDropPolicy;
     return tasktab().booleanAt(key, tab().booleanAt(key, false));
   }
 
